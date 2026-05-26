@@ -32,6 +32,7 @@ test = [
 [project.scripts]
 agent-rally-point = "agent_rally_point.cli:main"
 agent-rally = "agent_rally_point.cli:main"
+rally = "agent_rally_point.cli:main"
 agent-rally-discover = "agent_rally_point.discover:_main"
 agent-rally-migrate = "agent_rally_point.migrate:_main"
 agent-rally-preflight = "agent_rally_point.preflight:main"

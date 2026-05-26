@@ -34,6 +34,40 @@ class PendingHandoff:
     files: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ActiveClaim:
+    """An unreleased ownership claim over a coordination resource."""
+
+    event_id: str
+    thread_id: str | None
+    owner_tool: str | None
+    resource: str
+    subject: str
+    age_seconds: int | None
+
+
+@dataclass(frozen=True)
+class ActiveBlocker:
+    """An unresolved blocker recorded in the coordination trace."""
+
+    event_id: str
+    thread_id: str | None
+    tool: str | None
+    subject: str
+    resource: str | None
+    severity: str
+    age_seconds: int | None
+
+
+@dataclass(frozen=True)
+class ClaimConflict:
+    """Two active claims that appear to cover the same resource."""
+
+    resource: str
+    claim_ids: tuple[str, ...]
+    owners: tuple[str, ...]
+
+
 def parse_since(value: str | None, *, now: float | None = None) -> float | None:
     """Return an epoch cutoff for a duration like ``2h`` or an ISO timestamp.
 
@@ -101,6 +135,22 @@ def record_id(record: dict) -> str:
     return "(no-id)"
 
 
+def record_aliases(record: dict) -> set[str]:
+    """Return ids that may be used to refer to ``record``."""
+    aliases = {record_id(record)}
+    rid = record.get("id")
+    if isinstance(rid, str) and rid:
+        aliases.add(rid)
+    payload = record.get("payload") or {}
+    pid = payload.get("id")
+    if isinstance(pid, str) and pid:
+        aliases.add(pid)
+    rev = record.get("revision")
+    if rev is not None:
+        aliases.add(f"rev:{rev}")
+    return aliases
+
+
 def event_label(record: dict) -> str:
     """Return a one-line human summary for ``record``."""
     payload = record.get("payload") or {}
@@ -136,6 +186,19 @@ def event_label(record: dict) -> str:
         return f"{tool} commit {sha}: {payload.get('subject', '')}".strip()
     if kind == "dep-change":
         return f"{tool} dependency changed: {payload.get('manifest', '(unknown manifest)')}"
+    if kind == "claim":
+        resource = payload.get("resource") or payload.get("path") or "(unknown resource)"
+        return f"{tool} claim {resource}: {subject or '(no subject)'}"
+    if kind == "claim-release":
+        ref = payload.get("ref_claim_id") or payload.get("ref_event_id") or ""
+        return f"{tool} release claim {ref}: {payload.get('reason', '')}".strip()
+    if kind == "blocker":
+        resource = payload.get("resource") or payload.get("path")
+        suffix = f" on {resource}" if resource else ""
+        return f"{tool} blocker{suffix}: {subject or payload.get('reason', '')}".strip()
+    if kind == "blocker-resolved":
+        ref = payload.get("ref_blocker_id") or payload.get("ref_event_id") or ""
+        return f"{tool} resolved blocker {ref}: {payload.get('resolution', '')}".strip()
     return f"{tool} {kind}: {subject or ''}".strip()
 
 
@@ -172,6 +235,7 @@ def related_records(records: Iterable[dict], identifier: str) -> list[dict]:
                 rec.get("id"), rec.get("thread_id"), rec.get("correlation_id"),
                 rec.get("causation_id"), payload.get("id"),
                 payload.get("ref_handoff_id"), payload.get("ref_event_id"),
+                payload.get("ref_claim_id"), payload.get("ref_blocker_id"),
                 payload.get("checkpoint_id"),
             }
             if ids.intersection(v for v in values if isinstance(v, str)):
@@ -187,6 +251,8 @@ def related_records(records: Iterable[dict], identifier: str) -> list[dict]:
                 rec.get("causation_id"), (rec.get("payload") or {}).get("id"),
                 (rec.get("payload") or {}).get("ref_handoff_id"),
                 (rec.get("payload") or {}).get("ref_event_id"),
+                (rec.get("payload") or {}).get("ref_claim_id"),
+                (rec.get("payload") or {}).get("ref_blocker_id"),
             }
             if isinstance(v, str)
         )
@@ -243,8 +309,7 @@ def pending_handoffs(records: Iterable[dict], *, tool: str | None = None) -> lis
         if requires_ack is False:
             continue
         hid = record_id(rec)
-        legacy_id = payload.get("id")
-        if hid in acked or (isinstance(legacy_id, str) and legacy_id in acked):
+        if record_aliases(rec).intersection(acked):
             continue
         to_tool = _handoff_target(payload)
         from_tool = _handoff_source(rec, payload)
@@ -267,6 +332,137 @@ def pending_handoffs(records: Iterable[dict], *, tool: str | None = None) -> lis
             files=tuple(str(x) for x in refs if isinstance(x, str)),
         ))
     return pending
+
+
+def _released_claim_ids(records: Iterable[dict]) -> set[str]:
+    released: set[str] = set()
+    for rec in records:
+        if rec.get("kind") != "claim-release":
+            continue
+        payload = rec.get("payload") or {}
+        for key in ("ref_claim_id", "ref_event_id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                released.add(value)
+    return released
+
+
+def active_claims(records: Iterable[dict], *, tool: str | None = None) -> list[ActiveClaim]:
+    """Return active ownership claims, optionally filtered to ``tool``."""
+    recs = list(records)
+    released = _released_claim_ids(recs)
+    out: list[ActiveClaim] = []
+    now = time.time()
+    for rec in recs:
+        if rec.get("kind") != "claim":
+            continue
+        cid = record_id(rec)
+        payload = rec.get("payload") or {}
+        if record_aliases(rec).intersection(released):
+            continue
+        owner = payload.get("owner_tool") or payload.get("tool") or rec.get("tool")
+        if tool and owner != tool:
+            continue
+        resource = payload.get("resource") or payload.get("path")
+        if not isinstance(resource, str) or not resource:
+            resource = "unknown"
+        subject = payload.get("subject") or payload.get("notes") or "(no subject)"
+        out.append(ActiveClaim(
+            event_id=cid,
+            thread_id=rec.get("thread_id") if isinstance(rec.get("thread_id"), str) else None,
+            owner_tool=owner if isinstance(owner, str) else None,
+            resource=resource,
+            subject=str(subject)[:120],
+            age_seconds=int(now - record_epoch(rec)) if record_epoch(rec) > 0 else None,
+        ))
+    return out
+
+
+def _file_resource_path(resource: str) -> str | None:
+    if not resource.startswith("file:"):
+        return None
+    return resource.removeprefix("file:").strip("/")
+
+
+def _resources_overlap(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    lp = _file_resource_path(left)
+    rp = _file_resource_path(right)
+    if lp is None or rp is None:
+        return False
+    return lp.startswith(rp + "/") or rp.startswith(lp + "/")
+
+
+def claim_conflicts(records: Iterable[dict]) -> list[ClaimConflict]:
+    """Return conflicts among active claims from different owners.
+
+    Non-file resources conflict on exact match. ``file:`` resources also
+    conflict on path containment, so a claim on ``file:docs`` conflicts with a
+    claim on ``file:docs/SCHEMA.md``.
+    """
+    claims = active_claims(records)
+    by_resource: dict[str, list[ActiveClaim]] = {}
+    for idx, left in enumerate(claims):
+        for right in claims[idx + 1:]:
+            if left.owner_tool == right.owner_tool:
+                continue
+            if not _resources_overlap(left.resource, right.resource):
+                continue
+            group_key = min((left.resource, right.resource), key=len)
+            bucket = by_resource.setdefault(group_key, [])
+            for claim in (left, right):
+                if claim not in bucket:
+                    bucket.append(claim)
+    conflicts: list[ClaimConflict] = []
+    for resource, claims in sorted(by_resource.items()):
+        owners = sorted({c.owner_tool or "unknown" for c in claims})
+        if len(claims) > 1 and len(owners) > 1:
+            conflicts.append(ClaimConflict(
+                resource=resource,
+                claim_ids=tuple(c.event_id for c in claims),
+                owners=tuple(owners),
+            ))
+    return conflicts
+
+
+def active_blockers(records: Iterable[dict], *, tool: str | None = None) -> list[ActiveBlocker]:
+    """Return blockers without a later ``blocker-resolved`` event."""
+    recs = list(records)
+    resolved: set[str] = set()
+    for rec in recs:
+        if rec.get("kind") != "blocker-resolved":
+            continue
+        payload = rec.get("payload") or {}
+        for key in ("ref_blocker_id", "ref_event_id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                resolved.add(value)
+    out: list[ActiveBlocker] = []
+    now = time.time()
+    for rec in recs:
+        if rec.get("kind") != "blocker":
+            continue
+        bid = record_id(rec)
+        payload = rec.get("payload") or {}
+        if record_aliases(rec).intersection(resolved):
+            continue
+        producer = rec.get("tool") if isinstance(rec.get("tool"), str) else None
+        if tool and producer != tool:
+            continue
+        subject = payload.get("subject") or payload.get("reason") or "(no subject)"
+        resource = payload.get("resource") or payload.get("path")
+        severity = payload.get("severity") or "blocked"
+        out.append(ActiveBlocker(
+            event_id=bid,
+            thread_id=rec.get("thread_id") if isinstance(rec.get("thread_id"), str) else None,
+            tool=producer,
+            subject=str(subject)[:120],
+            resource=resource if isinstance(resource, str) else None,
+            severity=str(severity),
+            age_seconds=int(now - record_epoch(rec)) if record_epoch(rec) > 0 else None,
+        ))
+    return out
 
 
 def find_record(records: Iterable[dict], identifier: str) -> dict | None:

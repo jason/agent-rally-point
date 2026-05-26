@@ -224,6 +224,10 @@ Known `kind` values map to canonical event `type`s:
 | `feedback` | `agent-rally.feedback.posted.v1` |
 | `handoff` | `agent-rally.handoff.created.v1` |
 | `ack` | `agent-rally.handoff.acknowledged.v1` |
+| `claim` | `agent-rally.claim.created.v1` |
+| `claim-release` | `agent-rally.claim.released.v1` |
+| `blocker` | `agent-rally.blocker.raised.v1` |
+| `blocker-resolved` | `agent-rally.blocker.resolved.v1` |
 
 Future event types should prefer the form:
 
@@ -238,6 +242,7 @@ agent-rally.handoff.acknowledged.v1
 agent-rally.claim.created.v1
 agent-rally.claim.released.v1
 agent-rally.blocker.raised.v1
+agent-rally.blocker.resolved.v1
 agent-rally.conflict.detected.v1
 agent-rally.signature.attached.v1
 ```
@@ -251,6 +256,10 @@ Current schemas:
 - `envelope.v1.schema.json`
 - `handoff.created.v1.schema.json`
 - `handoff.acknowledged.v1.schema.json`
+- `claim.created.v1.schema.json`
+- `claim.released.v1.schema.json`
+- `blocker.raised.v1.schema.json`
+- `blocker.resolved.v1.schema.json`
 - `feedback.posted.v1.schema.json`
 - `phase.recorded.v1.schema.json`
 - `commit.created.v1.schema.json`
@@ -269,23 +278,30 @@ unknown events are kept, and consumers decide whether to act.
 The package includes initial plain-text trace commands:
 
 ```bash
-agent-rally report --since 2h
-agent-rally replay --since 2h
-agent-rally thread <id-or-thread-id>
-agent-rally inbox --tool codex
-agent-rally handoff --to codex --subject "review schema" --files docs/SCHEMA.md
-agent-rally ack <handoff-id> --summary "reviewed"
-agent-rally reject <handoff-id> --reason "out of scope"
-agent-rally needs-info <handoff-id> --reason "which branch?"
-agent-rally score --since 2h
-agent-rally herdr status --report
-agent-rally herdr inject <handoff-id>
+rally report --since 2h
+rally replay --since 2h
+rally thread <id-or-thread-id>
+rally inbox --tool codex
+rally handoff --to codex --subject "review schema" --files docs/SCHEMA.md
+rally ack <handoff-id> --summary "reviewed"
+rally reject <handoff-id> --reason "out of scope"
+rally needs-info <handoff-id> --reason "which branch?"
+rally claim --path docs/SCHEMA.md --subject "edit schema"
+rally release <claim-id> --reason "done"
+rally blocker --subject "need branch" --reason "which branch?"
+rally unblock <blocker-id> --resolution "branch supplied"
+rally conflicts
+rally diagnose
+rally score --since 2h
+rally herdr status --report
+rally herdr inject <handoff-id>
 ```
 
 These commands are deliberately text-first and operate on the trace itself; a
 future TUI can build on the same query helpers. `score` is deterministic: it
 checks coordination invariants such as open required handoffs, dangling causal
-references, dangling ack/feedback references, and unresolved `needs-info` states.
+references, dangling ack/feedback references, unresolved `needs-info` states,
+active blockers, stale ownership claims, and conflicting active claims.
 The Herdr bridge is a dogfood adapter: it can report pending handoffs as Herdr
 custom status or inject a handoff prompt into the target pane, while ARP remains
 the trace source of truth. Injection and status reporting default to panes whose
@@ -307,8 +323,25 @@ Example scorer questions:
 - Did feedback point to a known handoff/thread?
 - Did commits happen after verification or before it?
 - Did dependency changes happen before tests that assumed the old environment?
-- Did soft-claim conflicts remain unresolved?
-- Did a session close with open blockers?
+- Did ownership-claim conflicts remain unresolved?
+- Did a session leave active blockers or stale claims?
+
+Explicit `claim` events are separate from historical `soft-claim` reactions in
+`checkpoint_read`. Soft claims are inferred from overlapping changed files in a
+checkpoint delta; explicit claims are producer-authored coordination events that
+can be released and diagnosed.
+
+`diagnose --json` emits stable finding `code` values for agent consumers:
+
+| Code | Source | Meaning |
+|---|---|---|
+| `open-required-handoff` | scorer | A required handoff has no final response. |
+| `dangling-causation` | scorer | `causation_id` does not resolve in the selected trace window. |
+| `dangling-reference` | scorer | An ack/feedback event references a missing event. |
+| `unresolved-needs-info` | scorer | The latest handoff response asks for more information. |
+| `claim-conflict` | diagnose | Different owners have active claims on the same resource. |
+| `active-blocker` | diagnose | A blocker has no later `blocker-resolved` event. |
+| `stale-claim` | diagnose | A claim is older than `--stale-after-seconds`. |
 
 This is distinct from LLM observability products that track prompts, tokens,
 latency, or tool calls. ARP's trace is about coordination correctness across
@@ -348,7 +381,7 @@ Consequences worth naming up-front:
   compatibility. `make_record()` no longer emits `ts`; new records use
   `time` exclusively.
 - **Herdr injection escalates a recorded event into agent input.** The
-  `agent-rally herdr inject` command invokes `herdr pane run` with text
+  `rally herdr inject` command invokes `herdr pane run` with text
   derived from a handoff payload (subject, notes, `ref_files`). Any tool
   with ARP write access can therefore plant prompt-injection text inside
   another agent's prompt context once an operator runs injection.

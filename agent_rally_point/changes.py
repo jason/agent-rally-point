@@ -48,6 +48,10 @@ KNOWN_KINDS = (
     "feedback",
     "handoff",
     "ack",
+    "claim",
+    "claim-release",
+    "blocker",
+    "blocker-resolved",
 )
 
 DEFAULT_DATA_CONTENT_TYPE = "application/json"
@@ -61,6 +65,10 @@ _KIND_TYPES = {
     "feedback": "agent-rally.feedback.posted.v1",
     "handoff": "agent-rally.handoff.created.v1",
     "ack": "agent-rally.handoff.acknowledged.v1",
+    "claim": "agent-rally.claim.created.v1",
+    "claim-release": "agent-rally.claim.released.v1",
+    "blocker": "agent-rally.blocker.raised.v1",
+    "blocker-resolved": "agent-rally.blocker.resolved.v1",
 }
 
 _RECORD_KEYS = (
@@ -121,6 +129,24 @@ def dataschema_for_type(event_type: str) -> str:
     return f"urn:agent-rally-point:schema:{suffix}"
 
 
+_TYPE_KINDS = {v: k for k, v in _KIND_TYPES.items()}
+
+
+def kind_for_type(event_type: str) -> str | None:
+    """Return the coarse ``kind`` for a canonical ``type``, or None if foreign.
+
+    Use this when dispatching on event semantics. ``type`` is the canonical
+    versioned identifier; ``kind`` is the derived display alias kept for
+    legacy compatibility.
+    """
+    if event_type in _TYPE_KINDS:
+        return _TYPE_KINDS[event_type]
+    if not event_type.startswith("agent-rally."):
+        return None
+    parts = event_type.removeprefix("agent-rally.").split(".")
+    return parts[0] if parts else None
+
+
 def make_record(
     *,
     kind: str,
@@ -159,7 +185,10 @@ def make_record(
         "app_slug": app_slug,
         "thread_id": canonical_thread,
         "causation_id": causation_id,
-        "correlation_id": correlation_id or canonical_thread,
+        # correlation_id is optional and only included when explicitly set
+        # (e.g., a workflow spans multiple thread_ids). For single-thread
+        # workflows — the common case — readers should fall back to thread_id.
+        **({"correlation_id": correlation_id} if correlation_id else {}),
         "datacontenttype": DEFAULT_DATA_CONTENT_TYPE,
         "dataschema": dataschema or dataschema_for_type(canonical_type),
         "payload": payload or {},

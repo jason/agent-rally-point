@@ -123,3 +123,88 @@ Sibling tools (build-loop, agent-rally-watcher, codex) discover the channel layo
 | Soft-claim is awareness, not a lock | Peer-file-overlap warns; never blocks. Consumers decide whether to mutate. |
 | Worktree-independent slug | Same channel from main checkout, clone, and every git worktree of the same canonical repo. |
 | Fire-and-forget writes | A coordination failure must never crash a host action. |
+
+## Architectural decisions
+
+These short ADRs document the load-bearing decisions that aren't visible
+from the code alone. They are stable contracts; changing one is a
+deliberate substrate-version bump.
+
+### ADR-1: Two storage shapes — append-only log + ephemeral TTL state
+
+The substrate maintains **two** kinds of state, deliberately distinguished:
+
+| Shape | Storage | Lifetime | Examples |
+|---|---|---|---|
+| Append-only event log | `changes.jsonl` | Forever (immutable) | `handoff`, `ack`, `claim`, `phase`, `commit`, … |
+| Ephemeral TTL state | `sessions/*.json`, `rally/presence-*.json`, `watchers/*.json` | Reaper-pruned by heartbeat TTL | presence, session cursors, daemon registration |
+
+Why this asymmetry: presence-style signals are high-frequency
+(heartbeats every few minutes), short-lived (TTL minutes), and have no
+audit value once stale. Logging them as events would bloat the
+immutable log without adding coordination signal. The cost is a small
+amount of cognitive overhead — operators have to know presence isn't
+in the trace. The split is enforced: the log has no
+rewrite/delete/truncate API; the TTL state has a reaper.
+
+### ADR-2: Worktrees share one channel
+
+`repo_id` resolves to one channel per canonical *repo*, not per worktree
+or branch. Multiple worktrees of the same upstream see each other's
+events. This is the default because the common case is "agents on
+different worktrees are still working on the same codebase and should
+coordinate."
+
+When isolation is desired (e.g., an experimental worktree should not
+emit `commit` events into the shared channel), consumers can override
+the channel via `--channel-dir`. There is no per-worktree `repo_id`
+scoping in v1.
+
+Branch scoping is also not part of `repo_id`. A branch context that
+needs its own channel can write to a different `app_slug` via
+`--channel-dir`, but the default is repo-level coordination.
+
+### ADR-3: No log compaction in v1
+
+`changes.jsonl` is append-only forever. The substrate provides no
+compaction, rollover, or pruning API. This is the simplest contract
+that preserves immutability and audit-replay.
+
+Consumers that need a bounded view filter at read time
+(`coordination_trace.filter_since`, `rally replay --since 2h`). The log
+on disk keeps growing.
+
+Future options if log size becomes a real problem:
+- **Time-windowed rollover.** `changes-YYYY-MM.jsonl` files indexed by
+  a `MANIFEST.json`; readers default to current window with `--all` to
+  load everything. Additive, doesn't break immutability.
+- **Snapshot + cold archive.** Periodic snapshot file representing
+  "active state at T"; original log preserved cold. Consumers prefer
+  the snapshot for warm reads.
+
+Neither is in v1. The decision to defer is intentional: pre-optimizing
+for a problem that hasn't appeared in any deployed channel adds
+maintenance debt now for hypothetical relief later.
+
+### ADR-4: Schema versioning — writers emit latest, readers accept all
+
+Packaged JSON Schemas in `agent_rally_point/schemas/` are **diagnostic
+contracts**, not enforced gates. Validation is warns-not-drops at the
+substrate (D7). This shapes the versioning policy:
+
+- **Writers** emit the current `type` version (`agent-rally.X.created.v1`).
+- **Readers** accept any version they recognize and warn (never drop)
+  on unknowns. A v1 reader seeing a v2 record keeps it; consumers
+  decide whether to act on the new fields.
+- **Breaking changes** bump the version suffix (`v1` → `v2`) and ship
+  a new schema file alongside the old one. The old schema is kept; old
+  records remain valid forever.
+- **Field additions** are additive within a version: schemas have
+  `additionalProperties: true` and consumers tolerate unknown fields.
+- **Field removals or semantic changes** require a new version.
+
+Result: there is no flag day. A long-running channel can contain v1
+records authored years before v2 readers came online; both keep
+working. The substrate never rewrites historical records.
+
+This policy applies to envelope and payload schemas equally.

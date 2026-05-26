@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rally-point:schema:claim.created.v1",
+  "title": "Agent Rally Point claim.created payload v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["owner_tool", "resource", "subject"],
+  "properties": {
+    "owner_tool": { "type": "string" },
+    "resource": { "type": "string", "description": "Opaque resource id such as file:docs/SCHEMA.md, task:ABC-123, or thread:thr_..." },
+    "subject": { "type": "string" },
+    "notes": { "type": "string" }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rally-point:schema:claim.released.v1",
+  "title": "Agent Rally Point claim.released payload v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["ref_claim_id"],
+  "properties": {
+    "ref_claim_id": { "type": "string" },
+    "ref_event_id": { "type": "string" },
+    "reason": { "type": "string" }
+  }
+}

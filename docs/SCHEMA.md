@@ -49,7 +49,7 @@ correlation. Domain-specific content stays inside `payload`.
 | `type`             | `string`          | Versioned semantic event type, e.g. `agent-rally.handoff.created.v1`. `kind` remains the coarse discriminator. |
 | `thread_id`        | `string`          | Opaque thread id (`thr_<32 hex>`) grouping related events such as handoff → ack → feedback. |
 | `causation_id`     | `string | null`   | Direct parent event `id`, when this event was caused by a prior event. |
-| `correlation_id`   | `string`          | Broader workflow/session correlation id. Defaults to `thread_id`. |
+| `correlation_id`   | `string`          | **Optional.** Broader workflow/session correlation id, used when a workflow correlates across multiple `thread_id`s. Absent when not set; readers should fall back to `thread_id`. |
 | `datacontenttype`  | `string`          | Payload media type. Currently always `application/json`. |
 | `dataschema`       | `string`          | URI for the schema that describes `payload`, e.g. `urn:agent-rally-point:schema:handoff.created.v1`. |
 
@@ -78,10 +78,32 @@ the canonical fields.
 | `feedback` | `agent-rally.feedback.posted.v1` | `urn:agent-rally-point:schema:feedback.posted.v1` |
 | `handoff` | `agent-rally.handoff.created.v1` | `urn:agent-rally-point:schema:handoff.created.v1` |
 | `ack` | `agent-rally.handoff.acknowledged.v1` | `urn:agent-rally-point:schema:handoff.acknowledged.v1` |
+| `claim` | `agent-rally.claim.created.v1` | `urn:agent-rally-point:schema:claim.created.v1` |
+| `claim-release` | `agent-rally.claim.released.v1` | `urn:agent-rally-point:schema:claim.released.v1` |
+| `blocker` | `agent-rally.blocker.raised.v1` | `urn:agent-rally-point:schema:blocker.raised.v1` |
+| `blocker-resolved` | `agent-rally.blocker.resolved.v1` | `urn:agent-rally-point:schema:blocker.resolved.v1` |
 
 Packaged JSON Schemas live under `agent_rally_point/schemas/`. They are
 diagnostic contracts for tooling and future bridges; validation remains
 warns-not-drops at the substrate layer.
+
+### Canonical fields and derived aliases
+
+Several fields express overlapping concepts because the envelope evolved
+through three eras (v0 legacy, canonical-identity, CloudEvents alignment).
+The hierarchy below is the single source of truth — dispatch and signing
+code should use the **canonical** field; other forms are derived aliases
+kept for compatibility or for spec consumers.
+
+| Concept | Canonical | Derived alias(es) | Notes |
+|---|---|---|---|
+| Event semantic type | `type` (`agent-rally.X.Y.vN`) | `kind` (coarse, e.g. `handoff`) | Use `kind_for_type()` to derive `kind`. Future readers may rely solely on `type`. |
+| Workflow grouping | `thread_id` | `correlation_id` (optional, absent unless workflow spans threads) | Default is "one thread = one workflow"; `correlation_id` is only present for the multi-thread case. |
+| Producer identity | `tool` / `model` / `run_id` | `source` (CloudEvents URI form of `tool`) | `source` is required by CloudEvents 1.0; ARP-native consumers prefer the structured `tool`/`model`/`run_id` triple. |
+
+Signed-event canonicalization (see [`SIGNED_EVENTS.md`](SIGNED_EVENTS.md))
+covers all envelope fields including derived aliases. A signer that emits
+`kind` and `type` is committing to both being consistent for that record.
 
 ### NON-GOAL guard
 
@@ -218,6 +240,77 @@ Receiver response to a handoff. New CLI lifecycle commands use `verdict` values
     "ref_handoff_id": "evt_...",
     "verdict": "done",
     "summary": "reviewed; no blockers"
+  }
+}
+```
+
+### `claim`
+
+Ownership claim over a coordination resource. Claims are awareness and routing
+signals, not filesystem locks. The CLI uses `rally claim --path <file>` as sugar
+for a normalized `file:<repo-relative-posix-path>` resource.
+
+This is distinct from historical `soft-claim` reactions in `checkpoint_read`,
+which are inferred from overlapping changed files in a checkpoint delta. A
+`claim` event is explicit intent: "this tool is currently working on this
+resource." Preflight/checkpoint soft-claims remain compatibility awareness
+signals; `rally conflicts` derives conflicts from active explicit claims.
+Multiple active claims by the same `owner_tool` on the same resource are treated
+as duplicate/self-overlapping intent, not a conflict; conflicts require two or
+more distinct owners.
+
+```json
+{
+  "kind": "claim",
+  "payload": {
+    "owner_tool": "pi",
+    "resource": "file:docs/SCHEMA.md",
+    "subject": "edit schema",
+    "notes": "updating canonical event docs"
+  }
+}
+```
+
+### `claim-release`
+
+Release a prior ownership claim.
+
+```json
+{
+  "kind": "claim-release",
+  "payload": {
+    "ref_claim_id": "evt_...",
+    "reason": "done"
+  }
+}
+```
+
+### `blocker`
+
+Stop-sign event for stuck coordination.
+
+```json
+{
+  "kind": "blocker",
+  "payload": {
+    "subject": "need branch",
+    "reason": "which branch should the reviewer inspect?",
+    "severity": "blocked",
+    "resource": "task:review"
+  }
+}
+```
+
+### `blocker-resolved`
+
+Resolve a prior blocker.
+
+```json
+{
+  "kind": "blocker-resolved",
+  "payload": {
+    "ref_blocker_id": "evt_...",
+    "resolution": "branch supplied"
   }
 }
 ```

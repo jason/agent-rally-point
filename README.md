@@ -4,6 +4,9 @@
 
 > **Local-first coordination point for coding agents working in the same repo: presence, handoffs, verifier gates, conflicts, and closeout without a server.**
 
+The user-facing CLI is **`rally`**. The package keeps the longer
+`agent-rally-point` / `agent-rally` names as compatibility aliases.
+
 Two or more AI agent CLIs (Claude Code, Codex, peer Claude sessions, CI verifiers) coordinating on a shared git repo with a human in the loop. No HTTP service. No broker. Just files + git for repo identity.
 
 ## Status

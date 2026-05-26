@@ -10,6 +10,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from agent_rally_point.changes import append_change, make_record  # noqa: E402
 from agent_rally_point.cli import main  # noqa: E402
 from agent_rally_point.coordination_trace import load_records  # noqa: E402
 
@@ -177,3 +178,83 @@ def test_inbox_json_lists_pending(tmp_path: Path, capsys):
     assert body["ok"] is True and body["command"] == "inbox"
     assert len(body["pending"]) == 1
     assert body["pending"][0]["to_tool"] == "codex"
+
+
+def test_claim_release_conflict_and_diagnose(tmp_path: Path, capsys):
+    # intent: Rally can coordinate ownership claims and explain conflicts/stuck work.
+    import json
+
+    assert main([
+        "claim", "--json", "--channel-dir", str(tmp_path), "--tool", "pi",
+        "--path", "./docs/SCHEMA.md", "--subject", "edit schema",
+    ]) == 0
+    claim_a = json.loads(capsys.readouterr().out)["event_id"]
+    assert main([
+        "claim", "--json", "--channel-dir", str(tmp_path), "--tool", "codex",
+        "--path", "docs/SCHEMA.md", "--subject", "review schema",
+    ]) == 0
+    claim_b = json.loads(capsys.readouterr().out)["event_id"]
+
+    assert main(["conflicts", "--json", "--channel-dir", str(tmp_path)]) == 0
+    conflicts = json.loads(capsys.readouterr().out)["conflicts"]
+    assert conflicts[0]["resource"] == "file:docs/SCHEMA.md"
+    assert set(conflicts[0]["claim_ids"]) == {claim_a, claim_b}
+
+    assert main(["diagnose", "--json", "--channel-dir", str(tmp_path)]) == 0
+    diag = json.loads(capsys.readouterr().out)
+    assert diag["status"] == "stuck"
+    assert any(f["code"] == "claim-conflict" for f in diag["findings"])
+
+    assert main(["release", "--channel-dir", str(tmp_path), "--tool", "codex", "rev:2"]) == 0
+    capsys.readouterr()
+    records = load_records(tmp_path)
+    release = records[-1]
+    assert release["kind"] == "claim-release"
+    assert release["causation_id"] == claim_b  # canonical records store the event id in top-level `id`
+    assert release["payload"]["ref_claim_id"] == claim_b
+    assert main(["conflicts", "--json", "--channel-dir", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["conflicts"] == []
+
+
+def test_blocker_surfaces_in_diagnose(tmp_path: Path, capsys):
+    # intent: a blocker event gives agents a clear stuck reason and next action.
+    import json
+
+    assert main([
+        "blocker", "--json", "--channel-dir", str(tmp_path), "--tool", "codex",
+        "--subject", "need branch", "--reason", "which branch?", "--resource", "task:review",
+    ]) == 0
+    blocker_id = json.loads(capsys.readouterr().out)["event_id"]
+    assert main(["blockers", "--json", "--channel-dir", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["blockers"][0]["event_id"] == blocker_id
+
+    assert main(["diagnose", "--json", "--channel-dir", str(tmp_path)]) == 0
+    diag = json.loads(capsys.readouterr().out)
+    assert any(f["code"] == "active-blocker" and f["event_id"] == blocker_id for f in diag["findings"])
+
+    assert main([
+        "unblock", "--json", "--channel-dir", str(tmp_path), "--tool", "pi",
+        "rev:1", "--resolution", "branch supplied",
+    ]) == 0
+    unblock_body = json.loads(capsys.readouterr().out)
+    assert unblock_body["resolved"] is True
+    assert unblock_body["ref_blocker_id"] == blocker_id
+    assert main(["diagnose", "--json", "--channel-dir", str(tmp_path)]) == 0
+    diag2 = json.loads(capsys.readouterr().out)
+    assert not any(f["code"] == "active-blocker" for f in diag2["findings"])
+
+
+def test_diagnose_does_not_age_out_open_state(tmp_path: Path, capsys):
+    # intent: old unresolved blockers/claims are still current stuck state.
+    import json
+
+    old_blocker = make_record(
+        kind="blocker", tool="codex", model="m", run_id="r", app_slug="app", revision=1,
+        event_id="evt_" + "8" * 32,
+        time_rfc3339="2020-01-01T00:00:00.000Z",
+        payload={"subject": "old blocker", "reason": "still blocked"},
+    )
+    append_change(tmp_path, old_blocker)
+    assert main(["diagnose", "--json", "--channel-dir", str(tmp_path), "--since", "1s"]) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert any(f["code"] == "active-blocker" for f in body["findings"])

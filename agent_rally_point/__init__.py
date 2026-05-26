@@ -44,6 +44,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "new_thread_id": ("changes", "new_thread_id"),
     "source_for_tool": ("changes", "source_for_tool"),
     "event_type_for_kind": ("changes", "event_type_for_kind"),
+    "kind_for_type": ("changes", "kind_for_type"),
     "dataschema_for_type": ("changes", "dataschema_for_type"),
     # monotonic revision counter
     "bump_revision": ("revision", "bump_revision"),
@@ -98,6 +99,7 @@ if TYPE_CHECKING:
         new_thread_id,
         source_for_tool,
         event_type_for_kind,
+        kind_for_type,
         dataschema_for_type,
     )
     from .revision import bump_revision  # noqa: F401

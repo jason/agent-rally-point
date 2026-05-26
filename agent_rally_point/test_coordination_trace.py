@@ -12,6 +12,9 @@ if str(_HERE) not in sys.path:
 
 from agent_rally_point.changes import append_change, make_record  # noqa: E402
 from agent_rally_point.coordination_trace import (  # noqa: E402
+    active_blockers,
+    active_claims,
+    claim_conflicts,
     filter_since,
     pending_handoffs,
     related_records,
@@ -115,3 +118,83 @@ def test_load_roundtrip_with_precanonical_record(tmp_path: Path):
     append_change(tmp_path, legacy)
     records = load_records(tmp_path)
     assert record_id(records[0]) == "rev:9"
+
+
+def test_active_claims_release_and_conflicts():
+    # intent: ownership is append-only; releases close claims and exact-resource conflicts are derived.
+    claim_a = _record(
+        "claim", 1,
+        {"owner_tool": "pi", "resource": "file:docs/SCHEMA.md", "subject": "edit schema"},
+        event_id="evt_" + "1" * 32,
+    )
+    claim_b = _record(
+        "claim", 2,
+        {"owner_tool": "codex", "resource": "file:docs/SCHEMA.md", "subject": "review schema"},
+        event_id="evt_" + "2" * 32,
+        tool="codex",
+    )
+    claim_c = _record(
+        "claim", 3,
+        {"owner_tool": "pi", "resource": "file:README.md", "subject": "docs"},
+        event_id="evt_" + "3" * 32,
+    )
+    release_c = _record(
+        "claim-release", 4,
+        {"ref_claim_id": claim_c["id"], "reason": "done"},
+        tool="pi",
+    )
+    records = [claim_a, claim_b, claim_c, release_c]
+    assert [c.event_id for c in active_claims(records)] == [claim_a["id"], claim_b["id"]]
+    conflicts = claim_conflicts(records)
+    assert len(conflicts) == 1
+    assert conflicts[0].resource == "file:docs/SCHEMA.md"
+    assert conflicts[0].owners == ("codex", "pi")
+
+
+def test_claim_conflicts_detect_file_path_overlap_and_rev_release():
+    # intent: file claims conflict on containment, and lifecycle references may use rev aliases.
+    parent = _record(
+        "claim", 1,
+        {"owner_tool": "pi", "resource": "file:docs", "subject": "docs sweep"},
+        event_id="evt_" + "6" * 32,
+    )
+    child = _record(
+        "claim", 2,
+        {"owner_tool": "codex", "resource": "file:docs/SCHEMA.md", "subject": "schema"},
+        event_id="evt_" + "7" * 32,
+        tool="codex",
+    )
+    conflicts = claim_conflicts([parent, child])
+    assert len(conflicts) == 1
+    assert conflicts[0].resource == "file:docs"
+
+    release_parent_by_rev = _record(
+        "claim-release", 3,
+        {"ref_claim_id": "rev:1", "reason": "done"},
+        tool="pi",
+    )
+    assert [c.event_id for c in active_claims([parent, child, release_parent_by_rev])] == [child["id"]]
+
+
+def test_active_blockers():
+    # intent: blockers are queryable coordination stop-signs for diagnose/reporting.
+    blocker = _record(
+        "blocker", 1,
+        {"subject": "need branch", "reason": "which branch?", "resource": "task:review", "severity": "blocked"},
+        event_id="evt_" + "4" * 32,
+        tool="codex",
+    )
+    assert active_blockers([blocker])[0].resource == "task:review"
+    assert active_blockers([blocker], tool="pi") == []
+    resolved = _record(
+        "blocker-resolved", 2,
+        {"ref_blocker_id": blocker["id"], "resolution": "branch supplied"},
+        tool="pi",
+    )
+    assert active_blockers([blocker, resolved]) == []
+    resolved_by_rev = _record(
+        "blocker-resolved", 3,
+        {"ref_blocker_id": "rev:1", "resolution": "branch supplied"},
+        tool="pi",
+    )
+    assert active_blockers([blocker, resolved_by_rev]) == []

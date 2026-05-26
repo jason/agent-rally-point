@@ -57,37 +57,46 @@ def test_make_record_schema():
     }
     assert set(r) >= {
         "specversion", "id", "source", "subject", "time", "type",
-        "thread_id", "causation_id", "correlation_id",
+        "thread_id", "causation_id",
         "datacontenttype", "dataschema",
     }
     assert "ts" not in r  # legacy epoch-seconds field dropped in 0.4
+    assert "correlation_id" not in r  # optional; only emitted when caller sets it
     assert r["kind"] == "commit" and r["revision"] == 3
     assert r["specversion"] == "1.0"
     assert r["id"].startswith("evt_")
     assert r["source"] == "urn:agent-rally-point:tool:claude"
     assert r["subject"] == "app"
     assert r["thread_id"].startswith("thr_")
-    assert r["correlation_id"] == r["thread_id"]
     assert r["type"] == "agent-rally.commit.created.v1"
     assert r["datacontenttype"] == "application/json"
     _assert_no_freq(r)
 
 
 def test_make_record_accepts_correlation_overrides():
-    # intent: consumers can link later records to an existing thread and parent event.
+    # intent: consumers can link later records to an existing thread, parent event, and broader workflow correlation.
     r = ch.make_record(
         kind="feedback", tool="codex", model="gpt", run_id="r2",
         app_slug="app", payload={}, revision=4,
         event_id="evt_" + "1" * 32,
         thread_id="thr_" + "2" * 32,
         causation_id="evt_" + "3" * 32,
+        correlation_id="thr_" + "9" * 32,
     )
     assert r["id"] == "evt_" + "1" * 32
     assert r["thread_id"] == "thr_" + "2" * 32
-    assert r["correlation_id"] == "thr_" + "2" * 32
+    assert r["correlation_id"] == "thr_" + "9" * 32
     assert r["causation_id"] == "evt_" + "3" * 32
     assert r["type"] == "agent-rally.feedback.posted.v1"
     assert r["dataschema"] == "urn:agent-rally-point:schema:feedback.posted.v1"
+
+
+def test_kind_for_type_round_trip():
+    # intent: type is canonical; kind is a derived display alias — readers can always recover kind.
+    assert ch.kind_for_type("agent-rally.handoff.created.v1") == "handoff"
+    assert ch.kind_for_type("agent-rally.blocker.resolved.v1") == "blocker-resolved"
+    assert ch.kind_for_type("agent-rally.future.kind.v1") == "future"  # graceful fallback
+    assert ch.kind_for_type("org.example.foreign.v1") is None  # foreign types return None
 
 
 def test_canonical_source_and_unknown_type_are_sanitized():

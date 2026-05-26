@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rally-point:schema:blocker.raised.v1",
+  "title": "Agent Rally Point blocker.raised payload v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["subject", "reason"],
+  "properties": {
+    "subject": { "type": "string" },
+    "reason": { "type": "string" },
+    "severity": { "type": "string" },
+    "resource": { "type": "string", "description": "Optional blocked resource id such as file:docs/SCHEMA.md, task:ABC-123, or thread:thr_..." }
+  }
+}

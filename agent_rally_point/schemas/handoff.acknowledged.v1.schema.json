@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-rally-point:schema:handoff.acknowledged.v1",
+  "title": "Agent Rally Point handoff.acknowledged payload v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["ref_handoff_id", "verdict"],
+  "properties": {
+    "ref_handoff_id": { "type": "string" },
+    "ref_event_id": { "type": "string" },
+    "verdict": { "type": "string", "enum": ["done", "rejected", "needs-info"] },
+    "summary": { "type": "string" },
+    "reason": { "type": "string" }
+  }
+}

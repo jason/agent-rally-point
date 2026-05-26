@@ -6,6 +6,25 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-05-26
+
+### Added
+
+- **Canonical event envelope (CloudEvents 1.0–aligned).** `make_record()` now emits `specversion`, `id` (`evt_<32 hex>`), `source` (`urn:agent-rally-point:tool:<tool>`), `subject`, `time` (RFC3339), `type` (e.g. `agent-rally.handoff.created.v1`), `datacontenttype`, `dataschema`, plus ARP causal fields `thread_id` / `causation_id` / `correlation_id`. Packaged JSON Schemas under `agent_rally_point/schemas/` describe the envelope and each known kind. See `docs/COORDINATION_TRACE.md` for the full positioning.
+- **Coordination-trace CLI surface.** `agent-rally-point` (alias `agent-rally`) gained `report`, `replay`, `thread`, `inbox`, `handoff`, `ack`, `reject`, `needs-info`, `score`, `herdr status`, and `herdr inject` subcommands. Every command supports `--json` for structured stdout; errors emit `{ok:false, error, exit_code, ...}` to stderr. Bare `agent-rally-point --json` prints a self-describing capability map. Stable exit codes: `0` OK, `1` RUNTIME, `2` NOT_FOUND, `4` EXTERNAL. `--version` flag added.
+- **`ack` record kind.** New event kind `agent-rally.handoff.acknowledged.v1` with verdicts `done` / `rejected` / `needs-info`. The CLI refuses to post an ack for a handoff not present in the channel unless `--force` is supplied (prevents zombie acks from typos).
+- **Herdr bridge with workspace targeting.** `herdr status --report` and `herdr inject` default to panes whose Herdr `cwd` matches the current `--workdir` (compared via `os.path.realpath` so symlinks and trailing slashes don't mask matches). Cross-workspace targeting requires the explicit `--allow-other-workspace` flag. Multiple matching panes resolve deterministically by `pane_id` sort order.
+- **Scorer.** `agent-rally score` evaluates trace invariants (open required handoffs, dangling causation/ack references, unresolved `needs-info`) directly over `changes.jsonl`.
+
+### Changed (breaking)
+
+- **`ts` field removed from canonical change records.** `make_record()` no longer emits the legacy floating-point `ts` (epoch seconds); records carry only `time` (RFC3339). Consumers reading change records must switch to `time`, or use `coordination_trace.record_epoch()` which still tolerates legacy `ts` for pre-0.4 records. The envelope JSON Schema and `docs/SCHEMA.md` were updated accordingly. Records on disk written before 0.4 remain valid and readable (warns-not-drops contract).
+
+### Security
+
+- **Documented Herdr injection trust model.** `agent-rally herdr inject` invokes `herdr pane run` with text derived from a handoff payload — any tool with ARP write access can plant prompt-injection content into a target agent's prompt context once an operator runs injection. The trust-model section in `docs/COORDINATION_TRACE.md` now names this explicitly: treat ARP write access as equivalent to terminal write on the receiving agent.
+- Cross-workspace Herdr injection is now blocked by default (see Herdr bridge above).
+
 ## [0.3.1] — 2026-05-24
 
 ### Added

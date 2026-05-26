@@ -21,7 +21,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 # Map: public attribute name -> (submodule, source attribute name)
 # Source attribute = the name in the submodule that the public attribute resolves to.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-rally-point"
-version = "0.3.1"
+version = "0.4.0"
 description = "Local-first coordination point for coding agents working in the same repo: presence, handoffs, verifier gates, conflicts, and closeout without a server."
 requires-python = ">=3.11"
 readme = "README.md"
@@ -31,6 +31,7 @@ test = [
 
 [project.scripts]
 agent-rally-point = "agent_rally_point.cli:main"
+agent-rally = "agent_rally_point.cli:main"
 agent-rally-discover = "agent_rally_point.discover:_main"
 agent-rally-migrate = "agent_rally_point.migrate:_main"
 agent-rally-preflight = "agent_rally_point.preflight:main"

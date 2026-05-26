@@ -29,7 +29,6 @@ correlation. Domain-specific content stays inside `payload`.
 
 | Field       | Type       | Description |
 |-------------|------------|-------------|
-| `ts`        | `float`    | Wall-clock seconds since epoch (`time.time()`). Used for human display and stale-record reaping. |
 | `kind`      | `string`   | Record discriminator. See [Record kinds](#record-kinds). |
 | `tool`      | `string`   | Stable tool id (`claude_code`, `codex`, `cursor`, `build-loop`, etc.). Defaults to `"unknown"`. |
 | `model`     | `string`   | Stable model id (`claude-opus-4-7`, `gpt-5`, etc.). Defaults to `"unknown"`. |
@@ -46,7 +45,7 @@ correlation. Domain-specific content stays inside `payload`.
 | `id`               | `string`          | Opaque stable event id (`evt_<32 hex>`). Unlike `revision`, this survives export/sync/merge. |
 | `source`           | `string`          | Producer URI, e.g. `urn:agent-rally-point:tool:pi`. |
 | `subject`          | `string`          | Producer-scoped subject. Defaults to `app_slug`. |
-| `time`             | `string`          | RFC3339 UTC timestamp for protocol consumers. `ts` remains for compatibility and stale-record logic. |
+| `time`             | `string`          | RFC3339 UTC timestamp. Sole event-time field as of 0.4 (legacy epoch-seconds `ts` is tolerated on read but no longer emitted). |
 | `type`             | `string`          | Versioned semantic event type, e.g. `agent-rally.handoff.created.v1`. `kind` remains the coarse discriminator. |
 | `thread_id`        | `string`          | Opaque thread id (`thr_<32 hex>`) grouping related events such as handoff → ack → feedback. |
 | `causation_id`     | `string | null`   | Direct parent event `id`, when this event was caused by a prior event. |
@@ -78,6 +77,7 @@ the canonical fields.
 | `arch-scan-complete` | `agent-rally.arch-scan.completed.v1` | `urn:agent-rally-point:schema:arch-scan.completed.v1` |
 | `feedback` | `agent-rally.feedback.posted.v1` | `urn:agent-rally-point:schema:feedback.posted.v1` |
 | `handoff` | `agent-rally.handoff.created.v1` | `urn:agent-rally-point:schema:handoff.created.v1` |
+| `ack` | `agent-rally.handoff.acknowledged.v1` | `urn:agent-rally-point:schema:handoff.acknowledged.v1` |
 
 Packaged JSON Schemas live under `agent_rally_point/schemas/`. They are
 diagnostic contracts for tooling and future bridges; validation remains
@@ -104,7 +104,7 @@ A commit landed on a branch the channel cares about.
 
 ```json
 {
-  "ts": 1779308543.92, "kind": "commit", "tool": "claude_code",
+  "time": "2026-05-16T18:22:23.920Z", "kind": "commit", "tool": "claude_code",
   "model": "claude-opus-4-7", "run_id": "build-2026-05-23-...",
   "app_slug": "build-loop", "revision": 18,
   "payload": {
@@ -202,6 +202,22 @@ Plan owner → verifier work-item transfer (added 2026-05-20).
     "to_tool": "codex",
     "work_item": "verify Step 4 archive",
     "deadline_ts": 1779400000.0
+  }
+}
+```
+
+### `ack`
+
+Receiver response to a handoff. New CLI lifecycle commands use `verdict` values
+`done`, `rejected`, and `needs-info`.
+
+```json
+{
+  "kind": "ack",
+  "payload": {
+    "ref_handoff_id": "evt_...",
+    "verdict": "done",
+    "summary": "reviewed; no blockers"
   }
 }
 ```
